@@ -23,12 +23,15 @@ type LanguageConfig struct {
 	QueryParam string
 	// ExtractFromPath enables checking URL path prefix (e.g., /ja/...)
 	ExtractFromPath bool
+	// CookieName to check for language preference (defaults to "lang")
+	CookieName string
 }
 
 // Language returns middleware that detects user language from:
 // 1. Query parameter (?lang=ja)
-// 2. URL path prefix (/ja/...) if ExtractFromPath is true
-// 3. Accept-Language header with q-value parsing
+// 2. Cookie (if CookieName is set)
+// 3. URL path prefix (/ja/...) if ExtractFromPath is true
+// 4. Accept-Language header with q-value parsing
 //
 // The detected language is stored in both gin context and request context,
 // and the Content-Language header is set on the response.
@@ -53,8 +56,13 @@ func Language(cfg LanguageConfig) gin.HandlerFunc {
 		queryParam = "lang"
 	}
 
+	cookieName := cfg.CookieName
+	if cookieName == "" {
+		cookieName = "lang"
+	}
+
 	return func(c *gin.Context) {
-		lang := resolveLanguage(c, supportedMap, defaultLang, queryParam, cfg.ExtractFromPath)
+		lang := resolveLanguage(c, supportedMap, defaultLang, queryParam, cookieName, cfg.ExtractFromPath)
 
 		// Store in gin context
 		c.Set("language", lang)
@@ -71,19 +79,29 @@ func Language(cfg LanguageConfig) gin.HandlerFunc {
 }
 
 // resolveLanguage determines the best language from available sources.
-func resolveLanguage(c *gin.Context, supported map[string]struct{}, fallback, queryParam string, extractFromPath bool) string {
+func resolveLanguage(c *gin.Context, supported map[string]struct{}, fallback, queryParam, cookieName string, extractFromPath bool) string {
 	if c == nil || c.Request == nil {
 		return fallback
 	}
 
-	// 1. Check query parameter
+	// 1. Check query parameter (highest priority - explicit override)
 	if lang := strings.ToLower(strings.TrimSpace(c.Query(queryParam))); lang != "" {
 		if _, ok := supported[lang]; ok {
 			return lang
 		}
 	}
 
-	// 2. Check URL path prefix
+	// 2. Check cookie (user's saved preference)
+	if cookieName != "" {
+		if lang, err := c.Cookie(cookieName); err == nil && lang != "" {
+			lang = strings.ToLower(strings.TrimSpace(lang))
+			if _, ok := supported[lang]; ok {
+				return lang
+			}
+		}
+	}
+
+	// 3. Check URL path prefix
 	if extractFromPath {
 		if lang := extractLanguageFromPath(c.Request.URL.Path); lang != "" {
 			if _, ok := supported[lang]; ok {
@@ -92,9 +110,9 @@ func resolveLanguage(c *gin.Context, supported map[string]struct{}, fallback, qu
 		}
 	}
 
-	// 3. Check Accept-Language header
+	// 4. Check Accept-Language header
 	if header := c.GetHeader("Accept-Language"); header != "" {
-		if lang := parseAcceptLanguage(header, supported); lang != "" {
+		if lang := ParseAcceptLanguage(header, supported); lang != "" {
 			return lang
 		}
 	}
@@ -117,9 +135,9 @@ func extractLanguageFromPath(path string) string {
 	return ""
 }
 
-// parseAcceptLanguage parses the Accept-Language header and returns the best
-// supported language based on q-values.
-func parseAcceptLanguage(header string, supported map[string]struct{}) string {
+// ParseAcceptLanguage parses the Accept-Language header and returns the best
+// supported language based on q-values. Exported for use by redirect middleware.
+func ParseAcceptLanguage(header string, supported map[string]struct{}) string {
 	type candidate struct {
 		lang string
 		q    float64
@@ -218,4 +236,21 @@ func LanguageFromContext(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+// BuildSupportedMap creates a map of supported languages for fast lookup.
+// Useful for redirect middleware that needs to check language validity.
+func BuildSupportedMap(languages []string) map[string]struct{} {
+	m := make(map[string]struct{}, len(languages))
+	for _, lang := range languages {
+		m[strings.ToLower(lang)] = struct{}{}
+	}
+	return m
+}
+
+// ExtractLanguageFromPath extracts a 2-3 character language code from URL path prefix.
+// e.g., "/ja/galleries" -> "ja", "/galleries" -> ""
+// Exported for use by redirect middleware.
+func ExtractLanguageFromPath(path string) string {
+	return extractLanguageFromPath(path)
 }

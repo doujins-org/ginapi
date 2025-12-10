@@ -41,9 +41,8 @@ func TestLanguageFromQueryParam(t *testing.T) {
 func TestLanguageFromPath(t *testing.T) {
 	router := gin.New()
 	router.Use(middleware.Language(middleware.LanguageConfig{
-		Supported:       []string{"en", "ja", "ko"},
-		Default:         "en",
-		ExtractFromPath: true,
+		Supported: []string{"en", "ja", "ko"},
+		Default:   "en",
 	}))
 	router.GET("/ko/*path", func(c *gin.Context) {
 		lang := middleware.GetLanguage(c)

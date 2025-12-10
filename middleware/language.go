@@ -260,132 +260,72 @@ func ExtractLanguageFromPath(path string) string {
 	return extractLanguageFromPath(path)
 }
 
-// LanguageRedirectConfig configures the language redirect middleware.
+// LanguageRedirectConfig configures language redirect behavior for NoRoute handlers.
 type LanguageRedirectConfig struct {
 	// Supported languages (e.g., []string{"en", "ja", "ko", "zh"})
 	Supported []string
 	// Default language if none detected (defaults to "en")
 	Default string
-	// SkipPaths are path prefixes that should not be redirected (e.g., "/api/", "/auth/")
-	// By default, /api/, /auth/, /oauth/, /.well-known/ are skipped.
-	SkipPaths []string
-	// SkipExtensions are file extensions that should not be redirected
-	// By default, common static file extensions are skipped.
-	SkipExtensions []string
 }
 
-// LanguageRedirect returns middleware that handles language URL routing for frontend routes.
+// HandleLanguageRedirect checks if a language redirect is needed and performs it.
+// Returns true if a redirect was performed (caller should return early).
+// Returns false if no redirect needed (caller should continue to serve the page).
+//
+// This is designed to be called from a NoRoute handler:
+//
+//	r.NoRoute(func(c *gin.Context) {
+//	    if middleware.HandleLanguageRedirect(c, cfg) {
+//	        return // redirect was performed
+//	    }
+//	    // serve SPA
+//	    serveIndexHTML(c)
+//	})
 //
 // Behavior:
-// 1. If URL has a valid language prefix (e.g., /en/videos, /ja/videos):
-//   - Set the language cookie for future visits
-//   - Continue to serve the page
-//
-// 2. If URL has NO language prefix (e.g., /videos):
-//   - Detect language from: cookie → Accept-Language → default
-//   - 302 redirect to the language-prefixed URL (e.g., /en/videos)
-//
-// This ensures all frontend URLs have a language prefix.
-// API routes (/api/*) and static files are automatically skipped.
-func LanguageRedirect(cfg LanguageRedirectConfig) gin.HandlerFunc {
+//   - If URL has a valid language prefix (e.g., /en/videos): set cookie, return false
+//   - If URL has NO language prefix (e.g., /videos): redirect to prefixed URL, return true
+func HandleLanguageRedirect(c *gin.Context, cfg LanguageRedirectConfig) bool {
 	if len(cfg.Supported) == 0 {
-		// No languages configured - pass through without redirects
-		return func(c *gin.Context) {
-			c.Next()
-		}
+		return false
 	}
 
-	// Build supported language map for fast lookup
 	supportedMap := BuildSupportedMap(cfg.Supported)
 	defaultLang := strings.ToLower(strings.TrimSpace(cfg.Default))
 	if defaultLang == "" {
 		defaultLang = "en"
 	}
 
-	// Default skip paths
-	skipPaths := cfg.SkipPaths
-	if len(skipPaths) == 0 {
-		skipPaths = []string{"/api/", "/auth/", "/oauth/", "/.well-known/"}
+	path := c.Request.URL.Path
+
+	// Check if URL already has a language prefix
+	langFromPath := extractLanguageFromPath(path)
+	if langFromPath != "" {
+		if _, ok := supportedMap[langFromPath]; ok {
+			// Valid language prefix - set cookie and continue
+			SetLanguageCookie(c, langFromPath)
+			return false
+		}
+		// Invalid language prefix - fall through to redirect
 	}
 
-	// Default skip extensions
-	skipExtensions := cfg.SkipExtensions
-	if len(skipExtensions) == 0 {
-		skipExtensions = []string{
-			".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
-			".woff", ".woff2", ".ttf", ".eot", ".map", ".webp", ".mp4", ".webm",
-		}
+	// No valid language prefix - determine preferred language and redirect
+	preferredLang := DetectPreferredLanguage(c, supportedMap, defaultLang)
+
+	// Build redirect URL with language prefix
+	redirectURL := "/" + preferredLang + path
+	if c.Request.URL.RawQuery != "" {
+		redirectURL += "?" + c.Request.URL.RawQuery
 	}
 
-	return func(c *gin.Context) {
-		path := c.Request.URL.Path
-
-		// Skip paths that shouldn't be redirected
-		if shouldSkipRedirect(path, skipPaths, skipExtensions) {
-			c.Next()
-			return
-		}
-
-		// Check if URL already has a language prefix
-		langFromPath := extractLanguageFromPath(path)
-		if langFromPath != "" {
-			// Validate it's a supported language
-			if _, ok := supportedMap[langFromPath]; ok {
-				// Valid language prefix - set cookie and continue
-				setLanguageCookie(c, langFromPath)
-				c.Next()
-				return
-			}
-			// Invalid language prefix - fall through to redirect
-		}
-
-		// No valid language prefix - determine preferred language and redirect
-		preferredLang := detectPreferredLanguage(c, supportedMap, defaultLang)
-
-		// Build redirect URL with language prefix
-		redirectURL := "/" + preferredLang + path
-		if c.Request.URL.RawQuery != "" {
-			redirectURL += "?" + c.Request.URL.RawQuery
-		}
-
-		c.Redirect(http.StatusFound, redirectURL)
-		c.Abort()
-	}
+	c.Redirect(http.StatusFound, redirectURL)
+	c.Abort()
+	return true
 }
 
-// shouldSkipRedirect returns true for paths that should not be redirected.
-func shouldSkipRedirect(path string, skipPaths, skipExtensions []string) bool {
-	// Check skip paths
-	for _, prefix := range skipPaths {
-		if strings.HasPrefix(path, prefix) {
-			return true
-		}
-	}
-
-	// Skip common health check paths
-	if path == "/health" || path == "/healthz" || path == "/readyz" {
-		return true
-	}
-
-	// Skip runtime config
-	if path == "/runtime-config.js" {
-		return true
-	}
-
-	// Check file extensions
-	lowPath := strings.ToLower(path)
-	for _, ext := range skipExtensions {
-		if strings.HasSuffix(lowPath, ext) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// detectPreferredLanguage determines user's preferred language for redirect.
+// DetectPreferredLanguage determines user's preferred language.
 // Priority: cookie → Accept-Language → default
-func detectPreferredLanguage(c *gin.Context, supportedMap map[string]struct{}, defaultLang string) string {
+func DetectPreferredLanguage(c *gin.Context, supportedMap map[string]struct{}, defaultLang string) string {
 	// 1. Check cookie (user's saved preference)
 	if lang, err := c.Cookie(LanguageCookieName); err == nil && lang != "" {
 		lang = strings.ToLower(strings.TrimSpace(lang))
@@ -405,8 +345,8 @@ func detectPreferredLanguage(c *gin.Context, supportedMap map[string]struct{}, d
 	return defaultLang
 }
 
-// setLanguageCookie sets the language preference cookie.
-func setLanguageCookie(c *gin.Context, lang string) {
+// SetLanguageCookie sets the language preference cookie (1 year, SameSite=Lax).
+func SetLanguageCookie(c *gin.Context, lang string) {
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(LanguageCookieName, lang, LanguageCookieMaxAge, "/", "", false, false)
 }

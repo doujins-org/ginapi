@@ -1,16 +1,19 @@
 # ginapi
 
-Shared Gin API utilities for consistent REST APIs across projects. Uses Stripe-style response formats with offset/limit pagination.
+Shared Gin utilities for building consistent REST APIs across multiple Go projects.
 
 ## Why?
 
-Eliminates copy-paste boilerplate for:
-- Response envelopes (consistent JSON structure)
-- Error handling (typed errors with proper HTTP status codes)
-- Pagination (offset/limit binding and response formatting)
-- ID formatting (Stripe-style `gal_7B` prefixes)
+When you have multiple services (doujins, hentai0, etc.) that need consistent API behavior, this library provides:
 
-## Installation
+- **Response formatting** - Stripe-style JSON envelopes so all APIs return the same structure
+- **Pagination** - Offset/limit binding with sensible defaults
+- **Language detection** - Middleware that detects user language from query params, URL path, cookies, or Accept-Language headers
+- **Language redirects** - Helpers for routes without a language prefix (e.g., `/galleries`) that need to 302 redirect to a concrete language (e.g., `/en/galleries`) based on user preference
+
+Instead of copy-pasting this boilerplate into each project, import it once.
+
+## Install
 
 ```bash
 go get github.com/doujins-org/ginapi
@@ -18,115 +21,56 @@ go get github.com/doujins-org/ginapi
 
 ## Response Format
 
-All responses follow Stripe conventions:
-
 ```json
-// Single object
-{"object": "artist", "id": "art_7B", "name": "Takehiko Inoue"}
+{"object": "artist", "id": "123", "name": "..."}
 
-// List with pagination
-{
-  "object": "list",
-  "data": [{"object": "artist", ...}, ...],
-  "total": 1523,
-  "limit": 20,
-  "offset": 0,
-  "has_more": true
-}
+{"object": "list", "data": [...], "total": 100, "limit": 20, "offset": 0, "has_more": true}
 
-// Error
-{
-  "object": "error",
-  "error": {
-    "type": "not_found_error",
-    "message": "artist not found"
-  }
-}
-```
-
-## Quick Start
-
-```go
-import (
-    "github.com/doujins-org/ginapi/response"
-    "github.com/doujins-org/ginapi/pagination"
-)
-
-func ListArtists(c *gin.Context) {
-    params := pagination.BindDefault(c)  // ?limit=20&offset=0
-
-    artists, total, err := artistRepo.List(ctx, params.Limit, params.Offset)
-    if err != nil {
-        response.InternalError(c, "failed to list artists")
-        return
-    }
-
-    response.ListResponse(c, artists, total, params.Limit, params.Offset)
-}
-
-func GetArtist(c *gin.Context) {
-    artist, err := artistRepo.GetByID(ctx, c.Param("id"))
-    if err != nil {
-        response.NotFound(c, "artist")
-        return
-    }
-
-    response.Object(c, artist)
-}
-```
-
-## Packages
-
-| Package | Purpose |
-|---------|---------|
-| `response` | Stripe-style JSON responses and errors |
-| `pagination` | Offset/limit param binding |
-| `ids` | Stripe-style ID formatting (`gal_7B`) |
-| `middleware` | Language detection from query/path/headers |
-
-## ID Formatting
-
-```go
-import "github.com/doujins-org/ginapi/ids"
-
-formatted := ids.Format("gal", 123)     // "gal_1Z"
-parsed, _ := ids.Parse("gal", "gal_1Z") // 123
+{"object": "error", "error": {"type": "not_found_error", "message": "..."}}
 ```
 
 ## Pagination
 
 ```go
-import "github.com/doujins-org/ginapi/pagination"
-
-// Bind with defaults (limit=20, max=100)
 params := pagination.BindDefault(c)  // ?limit=20&offset=0
-
-// Custom defaults
-params := pagination.BindWithDefaults(c, 50, 200)  // default=50, max=200
-
-// Use in queries
-artists, total, err := repo.List(ctx, params.Limit, params.Offset)
-
-// Return paginated response
-response.ListResponse(c, artists, total, params.Limit, params.Offset)
+response.ListResponse(c, items, total, params.Limit, params.Offset)
 ```
 
-## Language Detection
+## Language Middleware
+
+Detects language from: query param → URL path → cookie → Accept-Language → default.
 
 ```go
-import "github.com/doujins-org/ginapi/middleware"
-
-// Add middleware to router
 router.Use(middleware.Language(middleware.LanguageConfig{
-    Supported:       []string{"en", "ja", "ko", "zh"},
-    Default:         "en",
-    QueryParam:      "lang",        // ?lang=ja
-    ExtractFromPath: true,          // /ja/galleries
+    Supported: []string{"en", "ja", "ko"},
+    Default:   "en",
 }))
 
-// In handlers:
-lang := middleware.GetLanguage(c)  // "ja"
-
-// Or from context (for use in services):
-lang := middleware.LanguageFromContext(ctx)
+lang := middleware.GetLanguage(c)
 ```
+
+## Language Redirect (NoRoute)
+
+Redirects `/galleries` → `/en/galleries` based on user preference.
+
+```go
+r.NoRoute(func(c *gin.Context) {
+    if middleware.HandleLanguageRedirect(c, middleware.LanguageRedirectConfig{
+        Supported: []string{"en", "ja", "ko"},
+        Default:   "en",
+    }) {
+        return
+    }
+    serveIndexHTML(c)
+})
+```
+
+## Reference
+
+| Function | Description |
+|----------|-------------|
+| `GetLanguage(c)` | Get detected language from gin context |
+| `LanguageFromContext(ctx)` | Get language from request context |
+| `SetLanguageCookie(c, lang)` | Set 1-year language cookie |
+| `ExtractLanguageFromPath(path)` | Extract lang prefix from URL |
+| `ParseAcceptLanguage(header, supported)` | Parse Accept-Language header |

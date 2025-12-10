@@ -2,17 +2,12 @@
 package middleware
 
 import (
-	"context"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 )
-
-type contextKey string
-
-const languageKey contextKey = "ginapi_language"
 
 const (
 	// LanguageCookieName is the default cookie name for language preference
@@ -40,8 +35,8 @@ type LanguageConfig struct {
 // 4. Accept-Language header with q-value parsing
 // 5. Default language
 //
-// The detected language is stored in both gin context and request context,
-// and the Content-Language header is set on the response.
+// The detected language is stored in gin context and retrieved via GetLanguage(c).
+// The Content-Language header is set on the response.
 func Language(cfg LanguageConfig) gin.HandlerFunc {
 	// Build supported language map for fast lookup
 	supportedMap := make(map[string]struct{}, len(cfg.Supported))
@@ -71,12 +66,8 @@ func Language(cfg LanguageConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		lang := resolveLanguage(c, supportedMap, defaultLang, queryParam, cookieName)
 
-		// Store in gin context
+		// Store in gin context (use GetLanguage(c) to retrieve)
 		c.Set("language", lang)
-
-		// Store in request context
-		ctx := WithLanguage(c.Request.Context(), lang)
-		c.Request = c.Request.WithContext(ctx)
 
 		// Set response header
 		c.Header("Content-Language", lang)
@@ -199,49 +190,21 @@ func ParseAcceptLanguage(header string, supported map[string]struct{}) string {
 }
 
 // GetLanguage retrieves the detected language from the gin context.
-// Falls back to request context, then returns "en" as ultimate fallback.
+// Returns "en" as fallback if not set.
 func GetLanguage(c *gin.Context) string {
 	if c == nil {
 		return "en"
 	}
 
-	// First try gin context (faster)
 	if lang, exists := c.Get("language"); exists {
 		if s, ok := lang.(string); ok && s != "" {
 			return s
 		}
 	}
 
-	// Fallback to request context
-	if lang := LanguageFromContext(c.Request.Context()); lang != "" {
-		return lang
-	}
-
 	return "en"
 }
 
-// WithLanguage stores a language code in the context.
-func WithLanguage(ctx context.Context, lang string) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if lang == "" {
-		return ctx
-	}
-	return context.WithValue(ctx, languageKey, strings.ToLower(lang))
-}
-
-// LanguageFromContext retrieves the language from a context.
-// Returns empty string if not set.
-func LanguageFromContext(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	if v, ok := ctx.Value(languageKey).(string); ok {
-		return v
-	}
-	return ""
-}
 
 // BuildSupportedMap creates a map of supported languages for fast lookup.
 // Useful for redirect middleware that needs to check language validity.
